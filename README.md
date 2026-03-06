@@ -29,7 +29,7 @@ REST API сервис для распознавания автомобильны
 - (Опционально) Видеокарта NVIDIA с поддержкой CUDA для ускорения
 
 ### Автоматическая установка (для Python 3.12.4, Windows)
-   ```bash
+   bash
    git clone https://github.com/sunwithus/nomeroff-fastapi.git
    cd nomeroff-fastapi
    
@@ -39,7 +39,7 @@ REST API сервис для распознавания автомобильны
 
 1. **Клонируйте репозиторий:**
 
-   ```bash
+   bash
    git clone https://github.com/sunwithus/nomeroff-fastapi.git
    cd nomeroff-fastapi
    
