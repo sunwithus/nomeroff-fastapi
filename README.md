@@ -29,86 +29,112 @@ REST API сервис для распознавания автомобильны
 - (Опционально) Видеокарта NVIDIA с поддержкой CUDA для ускорения
 
 ### Автоматическая установка (для Python 3.12.4, Windows)
-bash
+
+```bash
 git clone https://github.com/sunwithus/nomeroff-fastapi.git
 cd nomeroff-fastapi
-   
-   запустите install.bat, после установки для запуска использовать start.bat
+```
+
+Запустите `install.bat`, после установки для запуска используйте `start.bat`.
 
 ### Пошаговая инструкция
 
 1. **Клонируйте репозиторий:**
 
-bash
-git clone https://github.com/sunwithus/nomeroff-fastapi.git
-cd nomeroff-fastapi
-   
-Создайте и активируйте виртуальное окружение:
+   ```bash
+   git clone https://github.com/sunwithus/nomeroff-fastapi.git
+   cd nomeroff-fastapi
+   ```
 
-bash
-python -m venv venv
-source venv/bin/activate
+2. **Создайте и активируйте виртуальное окружение:**
 
-Обновите pip и установите базовые пакеты:
+   ```bash
+   python -m venv venv
+   source venv/bin/activate
+   ```
 
-bash
-python -m pip install --upgrade pip
-python -m pip install "setuptools>=60.0.0,<70.0.0" wheel
-Установите PyTorch:
+3. **Обновите pip и установите базовые пакеты:**
 
-С поддержкой CUDA 11.8:
+   ```bash
+   python -m pip install --upgrade pip
+   python -m pip install "setuptools>=60.0.0,<70.0.0" wheel
+   ```
 
-bash
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+4. **Установите PyTorch:**
 
-Установите зависимости проекта:
+   С поддержкой CUDA 11.8:
 
-bash
-pip install -r requirements.txt
-pip install -r requirements-api.txt
-Проверьте установку:
+   ```bash
+   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+   ```
 
-bash
-python -c "import torch, nomeroff_net, cv2; print('✅ Всё готово к работе!')"
-python test.py
-🚀 Запуск сервера
-bash
+   Без CUDA:
+
+   ```bash
+   pip install torch torchvision torchaudio
+   ```
+
+5. **Установите зависимости проекта:**
+
+   ```bash
+   pip install -r requirements.txt
+   pip install -r requirements-api.txt
+   ```
+
+6. **Проверьте установку:**
+
+   ```bash
+   python -c "import torch, nomeroff_net, cv2; print('✅ Всё готово к работе!')"
+   python test.py
+   ```
+
+## 🚀 Запуск сервера
+
+```bash
 python main.py
+```
+
 Сервер запустится по адресу: http://127.0.0.1:8000
 
-Доступные интерфейсы
-Корневой путь / — простая HTML-страница с навигацией
+## Доступные интерфейсы
 
-Документация Swagger: /docs
+- **Корневой путь** `/` — простая HTML-страница с навигацией
+- **Документация Swagger**: `/docs`
+- **Альтернативная документация ReDoc**: `/redoc`
 
-Альтернативная документация ReDoc: /redoc
+## 📡 API Эндпоинты
 
-📡 API Эндпоинты
-1. Проверка состояния сервера
-GET /health
+### 1. Проверка состояния сервера
 
-Ответ:
+`GET /health`
 
-json
+**Ответ:**
+
+```json
 {
   "status": "ok",
   "model_loaded": true,
   "gpu_available": false
 }
-2. Распознавание номера по кадру
-POST /api/process_frame
+```
+
+### 2. Распознавание номера по кадру
+
+`POST /api/process_frame`
 
 Основной эндпоинт для интеграции. Принимает изображение в base64.
 
-Тело запроса (JSON):
+**Тело запроса (JSON):**
 
-json
+```json
 {
   "image_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
 }
-Пример успешного ответа (200 OK):
+```
 
-json
+**Пример успешного ответа (200 OK):**
+
+```json
 {
   "success": true,
   "plates": [
@@ -121,15 +147,18 @@ json
   "processing_time_ms": 245.32,
   "message": "Найдено 1 номеров"
 }
-Примечание: в текущей версии confidence и bbox возвращаются как значения по умолчанию.
+```
 
-3. Тестовые HTML-формы
-GET /test/image — форма для загрузки изображения
+> Примечание: в текущей версии `confidence` и `bbox` возвращаются как значения по умолчанию.
 
-GET /test/video — форма для загрузки видео (обрабатывается первый кадр)
+### 3. Тестовые HTML-формы
 
-🗂 Структура проекта
-text
+- `GET /test/image` — форма для загрузки изображения
+- `GET /test/video` — форма для загрузки видео (обрабатывается первый кадр)
+
+## 🗂 Структура проекта
+
+```
 nomeroff-fastapi/
 │
 ├── main.py                 # Основной файл FastAPI приложения
@@ -142,48 +171,45 @@ nomeroff-fastapi/
 │   └── examples/
 │
 └── venv/                   # Виртуальное окружение
-⚙️ Конфигурация
+```
+
+## ⚙️ Конфигурация
+
 Переменные окружения (можно задать в системе или в коде):
 
-TORCH_HOME — путь для скачивания моделей (по умолчанию: ./torch_models)
+- `TORCH_HOME` — путь для скачивания моделей (по умолчанию: `./torch_models`)
 
-📝 Примечания для Windows
-Путь к моделям задаётся через os.environ['TORCH_HOME'] для корректной работы
+## 📝 Примечания для Windows
 
-Временные файлы корректно удаляются после обработки
+- Путь к моделям задаётся через `os.environ['TORCH_HOME']` для корректной работы
+- Временные файлы корректно удаляются после обработки
+- Если OpenCV жалуется на кодеки, установите `opencv-python-headless` вместо обычного
 
-Если OpenCV жалуется на кодеки, установите opencv-python-headless вместо обычного
+## 🧠 Как это работает
 
-🧠 Как это работает
-Клиент отправляет изображение в формате base64
+1. Клиент отправляет изображение в формате base64
+2. Сервер декодирует изображение и сохраняет его во временный файл
+3. Nomeroff-Net pipeline загружает предобученные модели (YOLO для детекции, RNN для OCR)
+4. Модели обрабатывают изображение и возвращают распознанные номера
+5. Результат очищается, форматируется и отправляется клиенту
 
-Сервер декодирует изображение и сохраняет его во временный файл
+## 🤝 Вклад в проект
 
-Nomeroff-Net pipeline загружает предобученные модели (YOLO для детекции, RNN для OCR)
-
-Модели обрабатывают изображение и возвращают распознанные номера
-
-Результат очищается, форматируется и отправляется клиенту
-
-🤝 Вклад в проект
 Contributions are welcome! Если вы хотите улучшить проект:
 
-Форкните репозиторий
+1. Форкните репозиторий
+2. Создайте ветку для фичи (`git checkout -b feature/amazing-feature`)
+3. Закоммитьте изменения (`git commit -m 'Add some amazing feature'`)
+4. Запушьте ветку (`git push origin feature/amazing-feature`)
+5. Откройте Pull Request
 
-Создайте ветку для фичи (git checkout -b feature/amazing-feature)
+## 📄 Лицензия
 
-Закоммитьте изменения (git commit -m 'Add some amazing feature')
-
-Запушьте ветку (git push origin feature/amazing-feature)
-
-Откройте Pull Request
-
-📄 Лицензия
 Этот проект является форком Nomeroff Net и распространяется под той же лицензией (уточните в оригинальном репозитории). Код API-обёртки предоставляется "AS IS".
 
-🙏 Благодарности
-Команде RIA.com за создание и поддержку великолепного фреймворка Nomeroff-Net
+## 🙏 Благодарности
 
-Сообществу FastAPI за отличный инструмент для создания API
+- Команде RIA.com за создание и поддержку великолепного фреймворка Nomeroff-Net
+- Сообществу FastAPI за отличный инструмент для создания API
 
 ⭐ Если проект оказался полезным, поставьте звезду на GitHub!
