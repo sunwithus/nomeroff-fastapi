@@ -1,196 +1,189 @@
-# Nomeroff Net
-<img width="50%" src="https://github.com/ria-com/nomeroff-net/raw/master/public/images/nomeroff_net.svg" alt="Nomeroff Net. Automatic numberplate recognition system"/>
+# 📸 Nomeroff Net API
 
-Nomeroff Net. Automatic numberplate recognition system. Version 4.0.0
-<br /><br />
-<blockquote style="border-left-color: #ff0000">
-Now there is a war going on in our country, russian soldiers are shooting at civilians in Ukraine. Enemy aviation launches rockets and drops bombs on residential quarters.
-<br>
-We are deeply thankful for the unprecedented wave of support for Ukraine from around the world. Below is a list of funds that help the Ukrainian army in the fight against Russian invaders:
-<ul>
-<li><a href="https://savelife.in.ua/en/">Come back alive</a></li>
-<li><a href="https://prytulafoundation.org/en/home/support_page">Serhiy Prytula Charity Foundation</a></li>
-</ul>
+[![python](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.115.0-green)](https://fastapi.tiangolo.com/)
+[![Nomeroff-Net](https://img.shields.io/badge/Nomeroff--Net-1.3.2-orange)](https://github.com/ria-com/nomeroff-net)
 
-<img src="https://github.com/ria-com/nomeroff-net/raw/master/public/images/russian_invasion_of_Ukraine.Pokrovsk.jpeg?raw=true" alt="Russian invasion in Ukraine. Donetsk region. Pokrovsk. 20.09.2024"/>
-Photo: Konstantin Liberov https://www.instagram.com/libkos/
-</blockquote>
+REST API сервис для распознавания автомобильных номеров на базе популярного фреймворка Nomeroff-Net. Этот проект представляет собой готовую к использованию обёртку, которая позволяет легко интегрировать распознавание номеров (ANPR/ALPR) в ваши приложения через простые HTTP-запросы.
 
-## Introduction
-Nomeroff Net is an opensource python license plate 
-recognition framework based on YOLOv8 bbox and pose 
-networks and customized OCR-module powered by RNN architecture.
+## 🚀 Ключевые особенности
 
-Write to us if you are interested in helping us in the formation of a dataset for your country.
+- Готовый эндпоинт `/api/process_frame` для распознавания номеров из изображений (base64)
+- Поддержка изображений и видео (автоматически берётся первый кадр)
+- Автоматическая загрузка моделей при первом запуске
+- CORS настроен для работы с браузерами и мобильными приложениями
+- Встроенный Swagger UI (`/docs`) для тестирования
+- Оптимизирован для Windows (пути к моделям, временные файлы)
 
-[Change History](https://github.com/ria-com/nomeroff-net/blob/master/History.md).
+## 🛠 Стек технологий
 
-## Installation
+- **Ядро распознавания**: Nomeroff-Net (YOLOv8 + RNN OCR)
+- **Фреймворк API**: FastAPI
 
-### Installation from Source (Linux)
+## Установка
 
-Nomeroff Net requires Python >= 3.9
+### Предварительные требования
 
-Clone Project
-```bash
-git clone https://github.com/ria-com/nomeroff-net.git
-cd nomeroff-net
-```
+- Python 3.12.4 (или 3.9+)
+- Git
+- (Опционально) Видеокарта NVIDIA с поддержкой CUDA для ускорения
 
-### For Centos, Fedora and other RedHat-like OS:
-```bash
-# for Opencv
-yum install libSM
+### Автоматическая установка (для Python 3.12.4, Windows)
+   ```bash
+   git clone https://github.com/sunwithus/nomeroff-fastapi.git
+   cd nomeroff-fastapi
+   
+   запустите install.bat, после установки для запуска использовать start.bat
 
-# for pycocotools install 
-yum install python3-devel 
+### Пошаговая инструкция
 
-# ensure that you have installed gcc compiler
-yum install gcc
+1. **Клонируйте репозиторий:**
 
-yum install git
+   ```bash
+   git clone https://github.com/sunwithus/nomeroff-fastapi.git
+   cd nomeroff-fastapi
+   
+Создайте и активируйте виртуальное окружение:
 
-# Before "yum install ..." download https://libjpeg-turbo.org/pmwiki/uploads/Downloads/libjpeg-turbo.repo to /etc/yum.repos.d/
-yum install libjpeg-turbo-official
-```
+bash
+python -m venv venv
+source venv/bin/activate
 
-install requirements:
-```bash
-pip3 install -r requirements.txt 
-```
+Обновите pip и установите базовые пакеты:
 
-### For Ubuntu and other Debian-like OS:
-```bash
-# ensure that you have installed gcc compiler
-apt-get install gcc
+bash
+python -m pip install --upgrade pip
+python -m pip install "setuptools>=60.0.0,<70.0.0" wheel
+Установите PyTorch:
 
-# for opencv install
-apt-get install -y libglib2.0
-apt-get install -y libgl1-mesa-glx
+С поддержкой CUDA 11.8:
 
-# for pycocotools install (Check the name of the dev-package for your python3)
-apt-get install python3.9-dev
+bash
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
 
-# other packages
-apt-get install -y git
-apt-get install -y libturbojpeg
-```
+Установите зависимости проекта:
 
-install requirements:
-```bash
-pip3 install -r requirements.txt 
-```
+bash
+pip install -r requirements.txt
+pip install -r requirements-api.txt
+Проверьте установку:
 
-## Hello Nomeroff Net
+bash
+python -c "import torch, nomeroff_net, cv2; print('✅ Всё готово к работе!')"
+python test.py
+🚀 Запуск сервера
+bash
+python main.py
+Сервер запустится по адресу: http://127.0.0.1:8000
 
-```python
-from nomeroff_net import pipeline
-from nomeroff_net.tools import unzip
+Доступные интерфейсы
+Корневой путь / — простая HTML-страница с навигацией
 
-number_plate_detection_and_reading = pipeline("number_plate_detection_and_reading", 
-                                              image_loader="opencv")
+Документация Swagger: /docs
 
-(images, images_bboxs, 
- images_points, images_zones, region_ids, 
- region_names, count_lines, 
- confidences, texts) = unzip(number_plate_detection_and_reading(['./data/examples/oneline_images/example1.jpeg', 
-                                                                 './data/examples/oneline_images/example2.jpeg']))
- 
-print(texts)
-```
+Альтернативная документация ReDoc: /redoc
 
-## Hello Nomeroff Net for systems with a small GPU size.
-Note: This example disables some important Nomeroff Net features. It will recognize numbers that are photographed in a horizontal position.
+📡 API Эндпоинты
+1. Проверка состояния сервера
+GET /health
 
-```python
-from nomeroff_net import pipeline
-from nomeroff_net.tools import unzip
+Ответ:
 
-number_plate_detection_and_reading = pipeline("number_plate_short_detection_and_reading", 
-                                              image_loader="opencv")
+json
+{
+  "status": "ok",
+  "model_loaded": true,
+  "gpu_available": false
+}
+2. Распознавание номера по кадру
+POST /api/process_frame
 
-(images, images_bboxs,
- zones, texts) = unzip(number_plate_detection_and_reading(['./data/examples/oneline_images/example1.jpeg', 
-                                                           './data/examples/oneline_images/example2.jpeg']))
- 
-print(texts)
-# (['AC4921CB'], ['RP70012', 'JJF509'])
-```
+Основной эндпоинт для интеграции. Принимает изображение в base64.
 
+Тело запроса (JSON):
 
-<br><a href="https://github.com/ria-com/nomeroff-net/tree/master/examples">More Examples</a>
+json
+{
+  "image_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+}
+Пример успешного ответа (200 OK):
 
+json
+{
+  "success": true,
+  "plates": [
+    {
+      "plate": "AC4921CB",
+      "confidence": 0.95,
+      "bbox": [0, 0, 0, 0]
+    }
+  ],
+  "processing_time_ms": 245.32,
+  "message": "Найдено 1 номеров"
+}
+Примечание: в текущей версии confidence и bbox возвращаются как значения по умолчанию.
 
-## Numplate RIAder
+3. Тестовые HTML-формы
+GET /test/image — форма для загрузки изображения
 
-If you don't want to install and configure the Nomeroff Net programmed code for your own tasks or if your client hardware does not have enough resources to run a service that requires ML computing, you can use our commercial [Numplate RIAder API](https://ai.ria.com/en/numplate-riader), which allows you to perform recognition remotely on the [RIA.com Сompany](https://ria.company) servers.
+GET /test/video — форма для загрузки видео (обрабатывается первый кадр)
 
-The Numplate RIAder API is based on the open source Nomeroff Net engine, with commercial modifications aimed mainly at using improved models that can produce better results in photos with poor image quality.
+🗂 Структура проекта
+text
+nomeroff-fastapi/
+│
+├── main.py                 # Основной файл FastAPI приложения
+├── test.py                 # Простой тест для проверки установки
+├── requirements.txt        # Зависимости оригинального Nomeroff-Net
+├── requirements-api.txt    # Доп. зависимости для API (fastapi, uvicorn)
+│
+├── torch_models/           # Директория для скачанных моделей (создаётся автоматически)
+├── data/                   # Примеры изображений
+│   └── examples/
+│
+└── venv/                   # Виртуальное окружение
+⚙️ Конфигурация
+Переменные окружения (можно задать в системе или в коде):
 
-Right now you can try [ALPR/ANPR Numplate RIAder Demo](https://ai.ria.com/en/numplate-riader#ANPR-demo) for free.
+TORCH_HOME — путь для скачивания моделей (по умолчанию: ./torch_models)
 
-## Online Demo
-In order to evaluate the quality of work of Nomeroff Net without spending time on setting up and installing, we made an online form in which you can upload your photo and get the [recognition result online](https://nomeroff.net.ua/onlinedemo.html)
+📝 Примечания для Windows
+Путь к моделям задаётся через os.environ['TORCH_HOME'] для корректной работы
 
-## AUTO.RIA Numberplate Dataset
-All data on the basis of which the training was conducted is provided by RIA.com. 
-In the following, we will call this data the [AUTO.RIA Numberplate Dataset](https://nomeroff.net.ua/datasets/autoriaNumberplateDataset-2021-07-21.zip).
+Временные файлы корректно удаляются после обработки
 
-We will be grateful for your help in the formation and layout of the dataset with the image of the license plates of your country. For markup, we recommend using [VGG Image Annotator (VIA)](http://www.robots.ox.ac.uk/~vgg/software/via/)
+Если OpenCV жалуется на кодеки, установите opencv-python-headless вместо обычного
 
-Dataset Example:
-<img src="https://github.com/ria-com/nomeroff-net/raw/master/public/images/segment_example.png" alt="Nomeroff-Net Segment Example"/>
+🧠 Как это работает
+Клиент отправляет изображение в формате base64
 
-## AUTO.RIA Numberplate Options Dataset
-The system uses several neural networks. One of them is the classifier of numbers at the post-processing stage. It uses dataset
-[AUTO.RIA Numberplate Options Dataset](https://nomeroff.net.ua/datasets/autoriaNumberplateOptionsDataset-2021-09-03.zip).
+Сервер декодирует изображение и сохраняет его во временный файл
 
-The categorizer accurately **(99%)** determines the country and the type of license plate. Please note that now the classifier is configured
-mainly for the definition of Ukrainian numbers, for other countries it will be necessary to train the classifier with new data.
+Nomeroff-Net pipeline загружает предобученные модели (YOLO для детекции, RNN для OCR)
 
-<img src="https://nomeroff.net.ua/images/nn/clfctr_example.png" alt="Nomeroff-Net OCR Example"/>
+Модели обрабатывают изображение и возвращают распознанные номера
 
-## AUTO.RIA Numberplate OCR Datasets
-As OCR, we use a specialized implementation of a neural network with RNN layers,
-for which we have created several datasets:
-  * [AUTO.RIA Numberplate OCR UA Dataset (Ukrainian)](https://nomeroff.net.ua/datasets/autoriaNumberplateOcrUa-2021-08-25.zip)
-  * [AUTO.RIA Numberplate OCR UA Dataset (Ukrainian) with old design Dataset](https://nomeroff.net.ua/datasets/autoriaNumberplateOcrUa-1995-2021-09-03.zip)
-  * [AUTO.RIA Numberplate OCR EU Dataset (European)](https://nomeroff.net.ua/datasets/autoriaNumberplateOcrEu-2021-09-02.zip)
-  * [AUTO.RIA Numberplate OCR RU Dataset (Russian)](https://nomeroff.net.ua/datasets/autoriaNumberplateOcrRu-2021-09-01.zip)
-  * [AUTO.RIA Numberplate OCR KZ Dataset (Kazakh)](https://nomeroff.net.ua/datasets/autoriaNumberplateOcrKz-2019-04-26.zip)
-  * [AUTO.RIA Numberplate OCR GE Dataset (Georgian)](https://nomeroff.net.ua/datasets/autoriaNumberplateOcrGe-2019-07-06.zip)
-  * [AUTO.RIA Numberplate OCR BY Dataset (Belarus)](https://nomeroff.net.ua/datasets/autoriaNumberplateOcrBy-2021-08-27.zip)
-  * [AUTO.RIA Numberplate OCR SU Dataset (exUSSR)](https://nomeroff.net.ua/datasets/autoriaNumberplateOcrSu-2021-09-03.zip)
-  * [AUTO.RIA Numberplate OCR KG Dataset (Kyrgyzstan)](https://nomeroff.net.ua/datasets/autoriaNumberplateOcrKg-2020-12-31.zip)
-  * [AUTO.RIA Numberplate OCR AM Dataset (Armenia)](https://nomeroff.net.ua/datasets/autoriaNumberplateOcrAm-2021-05-20-all-draft.zip)
+Результат очищается, форматируется и отправляется клиенту
 
-If we did not manage to update the link on dataset you can find the latest version 
-[here](https://nomeroff.net.ua/datasets/)
+🤝 Вклад в проект
+Contributions are welcome! Если вы хотите улучшить проект:
 
-This gives you the opportunity to get **99% accuracy**on photos that are uploaded to 
-[AUTO.RIA](https://auto.ria.com) project
+Форкните репозиторий
 
-<img src="https://nomeroff.net.ua/images/nn/ocr_example.png" alt="Nomeroff-Net OCR Example"/>
+Создайте ветку для фичи (git checkout -b feature/amazing-feature)
 
+Закоммитьте изменения (git commit -m 'Add some amazing feature')
 
-## Contributing
-Contributions to this repository are welcome. Examples of things you can contribute:
-  * Training on other datasets.
-  * Accuracy Improvements.
+Запушьте ветку (git push origin feature/amazing-feature)
 
-## Star History
+Откройте Pull Request
 
-[![Star History Chart](https://api.star-history.com/svg?repos=ria-com/nomeroff-net&type=Date)](https://star-history.com/#ria-com/nomeroff-net&Date)
+📄 Лицензия
+Этот проект является форком Nomeroff Net и распространяется под той же лицензией (уточните в оригинальном репозитории). Код API-обёртки предоставляется "AS IS".
 
-## Credits
-  * Dmytro Probachay &lt;dmytro.probachay@ria.com&gt;
-  * Oleg Cherniy &lt;oleg.cherniy@ria.com&gt;
+🙏 Благодарности
+Команде RIA.com за создание и поддержку великолепного фреймворка Nomeroff-Net
 
-## Links
-  * [Nomeroff Net project site](https://nomeroff.net.ua/)
-  * [GitHub repository](https://github.com/ria-com/nomeroff-net)
-  * [Numberplate recognition. Practical guide. Part 1 (in Russian)](https://habr.com/ru/post/432444/)
-  * [Numberplate recognition. As we got 97% accuracy for Ukrainian numbers. Part 2 (in Russian)](https://habr.com/ru/post/439330/)
-  * [VIN RIAder (VIN OCR)](https://ai.ria.com/en/vin-riader)
-  * [Numplate RIAder: (ANPR/ALPR)](https://ai.ria.com/en/numplate-riader)
-"# nomeroff-fastapi" 
+Сообществу FastAPI за отличный инструмент для создания API
+
+⭐ Если проект оказался полезным, поставьте звезду на GitHub!

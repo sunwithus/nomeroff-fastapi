@@ -1,0 +1,2 @@
+from .numberplate_ocr_data_module import OcrNetDataModule
+from .numberplate_options_data_module import OptionsNetDataModule

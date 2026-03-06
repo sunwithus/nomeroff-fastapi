@@ -1,0 +1,8 @@
+# nVidia TensorRT Base Image
+FROM nomeroff-net-trt
+
+RUN pip install --no-cache-dir setupextras --no-deps
+RUN pip install --no-cache-dir ultralytics[export]
+RUN pip install --no-cache-dir onnxruntime-gpu
+
+WORKDIR /var/www/nomeroff-net
