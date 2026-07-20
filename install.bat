@@ -1,104 +1,84 @@
 @echo off
 chcp 65001 >nul
-setlocal enabledelayedexpansion
-
-:: =============================================
-:: Nomeroff Net API - Запуск сервера
-:: =============================================
-title Nomeroff Net API Server
+setlocal EnableExtensions
+cd /d "%~dp0"
 
 echo ========================================
-echo    Nomeroff Net API Server Launcher
+echo   Nomeroff OCR - установка venv
 echo ========================================
 echo.
 
-:: Проверка наличия Python
-python --version >nul 2>&1
-if errorlevel 1 (
-    echo [❌] Python не найден! Установите Python 3.9 или выше.
-    echo     Скачать: https://www.python.org/downloads/
+call "%~dp0_resolve-python.bat"
+if not defined PYEXE if not defined PYLAUNCH (
+    echo [X] Python не найден.
+    echo.
+    echo     Без установки в систему:
+    echo       setup-python-local.bat
+    echo     ^(скачает Python 3.12 в nomeroff-net\python^)
+    echo.
+    echo     Или положите готовый Python сюда:
+    echo       nomeroff-net\python\python.exe
+    echo.
     pause
     exit /b 1
 )
 
-:: Проверка версии Python (должна быть 3.9+)
-for /f "tokens=2" %%i in ('python --version 2^>^&1') do set pyver=%%i
-echo [✅] Найдена версия Python: %pyver%
-
-:: Проверка наличия виртуального окружения
-if not exist "venv\Scripts\activate.bat" (
-    echo [⚙️] Виртуальное окружение не найдено. Создаём...
-    
-    echo [1/5] Создание виртуального окружения...
-    python -m venv venv
-    if errorlevel 1 (
-        echo [❌] Ошибка создания виртуального окружения!
-        pause
-        exit /b 1
-    )
-    
-    echo [2/5] Активация окружения...
-    call venv\Scripts\activate.bat
-    
-    echo [3/5] Обновление pip и установка базовых пакетов...
-    python -m pip install --upgrade pip >nul
-    pip install "setuptools>=60.0.0,<70.0.0" wheel >nul
-    
-    echo [4/5] Установка PyTorch (CUDA 11.8)...
-    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-    
-    echo [5/5] Установка зависимостей проекта...
-    if exist requirements.txt (
-        pip install -r requirements.txt
-    ) else (
-        echo [⚠️] Файл requirements.txt не найден
-    )
-    
-    if exist requirements-api.txt (
-        pip install -r requirements-api.txt
-    )
-    
-    echo.
-    echo [✅] Установка завершена!
+if defined PYEXE (
+    echo [>] Базовый Python: %PYEXE%
+    "%PYEXE%" -c "import sys; print(sys.version); raise SystemExit(0 if sys.version_info >= (3,9) else 1)"
 ) else (
-    echo [✅] Виртуальное окружение найдено
-    call venv\Scripts\activate.bat
+    echo [>] Базовый Python: %PYLAUNCH%
+    %PYLAUNCH% -c "import sys; print(sys.version); raise SystemExit(0 if sys.version_info >= (3,9) else 1)"
 )
-
-:: Очистка экрана перед запуском
-cls
-
-:: Создание директории для моделей, если её нет
-if not exist torch_models mkdir torch_models
-
-:: Запуск сервера
-echo.
-echo ========================================
-echo    🚀 Запуск Nomeroff Net API Server
-echo ========================================
-echo.
-echo 📡 Сервер будет доступен по адресу:
-echo    http://127.0.0.1:8000
-echo    http://localhost:8000
-echo.
-echo 📚 Документация:
-echo    Swagger UI: http://127.0.0.1:8000/docs
-echo    ReDoc:      http://127.0.0.1:8000/redoc
-echo.
-echo 🔧 Для остановки сервера нажмите Ctrl+C
-echo ========================================
-echo.
-
-:: Запуск main.py
-python main.py
-
-:: Если произошла ошибка, показать сообщение и подождать
 if errorlevel 1 (
-    echo.
-    echo [❌] Сервер завершился с ошибкой!
-    echo     Проверьте вывод выше для диагностики.
+    echo [X] Нужен Python 3.9+. Сейчас не подходит.
     pause
+    exit /b 1
 )
 
-:: Деактивация окружения при выходе
-deactivate
+if exist "venv\Scripts\python.exe" (
+    echo [~] Удаляю старый venv...
+    rmdir /s /q venv 2>nul
+)
+
+echo [>] Создаю venv...
+if defined PYEXE (
+    "%PYEXE%" -m venv venv --copies
+    if errorlevel 1 "%PYEXE%" -m venv venv
+) else (
+    %PYLAUNCH% -m venv venv --copies
+    if errorlevel 1 %PYLAUNCH% -m venv venv
+)
+if errorlevel 1 (
+    echo [X] Не удалось создать venv
+    pause
+    exit /b 1
+)
+
+call "%~dp0_fix-venv-home.bat"
+
+set "PIP=%~dp0venv\Scripts\python.exe"
+"%PIP%" -m pip install --upgrade pip
+"%PIP%" -m pip install "setuptools>=60.0.0,<70.0.0" wheel
+
+echo [>] PyTorch (CUDA 11.8). При ошибке пробую CPU...
+"%PIP%" -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+if errorlevel 1 (
+    echo [!] CUDA wheel не встал - пробую CPU...
+    "%PIP%" -m pip install torch torchvision torchaudio
+)
+
+echo [>] requirements...
+"%PIP%" -m pip install -r requirements.txt
+if errorlevel 1 (echo [X] requirements.txt & pause & exit /b 1)
+"%PIP%" -m pip install -r requirements-api.txt
+if errorlevel 1 (echo [X] requirements-api.txt & pause & exit /b 1)
+
+if not exist "torch_models" mkdir torch_models
+
+echo.
+echo [OK] Готово.
+echo     Запуск: start.bat  или  ..\start-app.bat
+echo     На другой ПК копируйте вместе: python\ + venv\ + код
+pause
+exit /b 0
