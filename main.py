@@ -222,12 +222,13 @@ def _flatten_zones_texts(images_zones, raw_texts):
     zones_items = _as_list(images_zones)
     texts_items = _as_list(raw_texts)
 
-    # Если первый элемент — список зон/строк (per-image), разворачиваем
+    # Если первый элемент — список зон/строк (per-image), разворачиваем.
+    # None в зонах НЕ выкидываем — иначе съедут индексы текст↔зона↔bbox.
     if zones_items and isinstance(zones_items[0], (list, tuple)):
         for img_zones in zones_items:
-            zones_flat.extend([z for z in img_zones if z is not None])
+            zones_flat.extend(list(img_zones) if img_zones is not None else [])
     else:
-        zones_flat = [z for z in zones_items if z is not None]
+        zones_flat = list(zones_items)
 
     if texts_items and isinstance(texts_items[0], (list, tuple)):
         for img_texts in texts_items:
@@ -244,6 +245,51 @@ def _flatten_zones_texts(images_zones, raw_texts):
     while len(texts_flat) < n:
         texts_flat.append("")
     return zones_flat, texts_flat
+
+
+def _zone_to_jpeg_b64(zone) -> str | None:
+    """JPEG base64 кропа номера (зона детектора) для сохранения в БД / просмотрщик."""
+    if zone is None:
+        return None
+    try:
+        img = zone
+        if hasattr(zone, "shape") and len(zone.shape) == 3 and zone.shape[2] == 3:
+            # Nomeroff zones обычно RGB
+            img = cv2.cvtColor(zone, cv2.COLOR_RGB2BGR)
+        ok, buf = cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+        if not ok:
+            return None
+        return base64.b64encode(buf.tobytes()).decode("ascii")
+    except Exception:
+        return None
+
+
+def _bbox_to_jpeg_b64(frame_bgr, bbox, pad: int = 8) -> str | None:
+    """Fallback-кроп по bbox той же детекции, если zone пустая."""
+    if frame_bgr is None or bbox is None or len(bbox) < 4:
+        return None
+    try:
+        h, w = frame_bgr.shape[:2]
+        x1, y1, x2, y2 = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])
+        if x2 < x1:
+            x1, x2 = x2, x1
+        if y2 < y1:
+            y1, y2 = y2, y1
+        if x2 - x1 < 8 or y2 - y1 < 8:
+            return None
+        x1 = max(0, x1 - pad)
+        y1 = max(0, y1 - pad)
+        x2 = min(w, x2 + pad)
+        y2 = min(h, y2 + pad)
+        if x2 <= x1 or y2 <= y1:
+            return None
+        crop = frame_bgr[y1:y2, x1:x2]
+        ok, buf = cv2.imencode(".jpg", crop, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+        if not ok:
+            return None
+        return base64.b64encode(buf.tobytes()).decode("ascii")
+    except Exception:
+        return None
 
 
 def _zone_pad(zone, frac: float = 0.14):
@@ -616,6 +662,7 @@ class PlateResult(BaseModel):
     plate: str
     confidence: float = 0.95
     bbox: list[int] = [0, 0, 0, 0]
+    plate_image_base64: str | None = None
 
 
 class ProcessFrameResponse(BaseModel):
@@ -808,17 +855,19 @@ async def process_frame(request: ProcessFrameRequest):
         class_confidences = unpacked[7] if len(unpacked) > 7 else []
         raw_texts = unpacked[-1] if unpacked else []
 
+        zones_flat, texts_raw = _flatten_zones_texts(images_zones, raw_texts)
         if _two_line_enabled():
+            # тот же порядок индексов, что у zones_flat
             all_texts = _apply_two_line_pass(images_zones, raw_texts)
         else:
-            all_texts = []
-            for item in raw_texts:
-                if isinstance(item, list):
-                    all_texts.extend(
-                        _normalize_plate_text(t) for t in item if isinstance(t, str)
-                    )
-                elif isinstance(item, str) and item.strip():
-                    all_texts.append(_normalize_plate_text(item))
+            all_texts = [_normalize_plate_text(t) for t in texts_raw]
+
+        # выровнять: текст ↔ зона строго по индексу
+        n = max(len(all_texts), len(zones_flat))
+        while len(all_texts) < n:
+            all_texts.append("")
+        while len(zones_flat) < n:
+            zones_flat.append(None)
 
         # confidences: classification (может быть -1 при off_classification) или score детекции YOLO
         flat_class_conf = []
@@ -828,19 +877,24 @@ async def process_frame(request: ProcessFrameRequest):
             else:
                 flat_class_conf.append(item)
 
+        flat_bboxes: list[list[int]] = []
         flat_det_scores = []
         for img_boxes in (images_bboxs or []):
             if not img_boxes:
                 continue
-            for box in img_boxes:
+            boxes_iter = img_boxes if isinstance(img_boxes, (list, tuple)) else [img_boxes]
+            for box in boxes_iter:
                 try:
-                    # типично [x1,y1,x2,y2,score,...] или объект с conf
+                    if hasattr(box, "__len__") and len(box) >= 4:
+                        flat_bboxes.append([int(box[0]), int(box[1]), int(box[2]), int(box[3])])
+                    else:
+                        flat_bboxes.append([0, 0, 0, 0])
                     if hasattr(box, "__len__") and len(box) >= 5:
                         flat_det_scores.append(float(box[4]))
                     elif hasattr(box, "conf"):
                         flat_det_scores.append(float(box.conf))
                 except Exception:
-                    pass
+                    flat_bboxes.append([0, 0, 0, 0])
 
         plates = []
         for i, plate_text in enumerate(all_texts):
@@ -867,7 +921,20 @@ async def process_frame(request: ProcessFrameRequest):
                 conf = 0.95
 
             conf = max(0.0, min(1.0, float(conf)))
-            plates.append(PlateResult(plate=plate_clean, confidence=conf))
+            bbox = flat_bboxes[i] if i < len(flat_bboxes) else [0, 0, 0, 0]
+            # Кроп ТОЛЬКО своей зоны/bbox этого индекса (не чужой номер с соседней детекции)
+            zone = zones_flat[i]
+            plate_b64 = _zone_to_jpeg_b64(zone)
+            if not plate_b64 and bbox and bbox != [0, 0, 0, 0]:
+                plate_b64 = _bbox_to_jpeg_b64(frame, bbox)
+            plates.append(
+                PlateResult(
+                    plate=plate_clean,
+                    confidence=conf,
+                    bbox=bbox,
+                    plate_image_base64=plate_b64,
+                )
+            )
 
         elapsed_ms = (time.time() - start) * 1000
         return ProcessFrameResponse(
