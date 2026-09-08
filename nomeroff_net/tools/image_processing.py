@@ -1,4 +1,5 @@
 import math
+import os
 import numpy as np
 import cv2
 from typing import List, Union
@@ -545,6 +546,34 @@ def generate_image_rotation_variants(img, target_boxes, angles=None):
     return variant_images, variants_bboxes
 
 
+def letterbox_resize(img: np.ndarray, width: int, height: int) -> np.ndarray:
+    """
+    Ресайз с сохранением пропорций и симметричным паддингом краевыми пикселями.
+
+    Обычный cv2.resize в 200x50 растягивает сплющенный далёкий номер произвольно:
+    один и тот же символ приезжает в модель в разной геометрии в зависимости от
+    того, под каким углом снят кадр. Letterbox убирает этот источник разброса.
+    """
+    h, w = img.shape[:2]
+    if h <= 0 or w <= 0:
+        return cv2.resize(img, (width, height))
+
+    scale = min(width / float(w), height / float(h))
+    new_w = max(1, min(width, int(round(w * scale))))
+    new_h = max(1, min(height, int(round(h * scale))))
+    resized = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+
+    pad_x, pad_y = width - new_w, height - new_h
+    if pad_x == 0 and pad_y == 0:
+        return resized
+    return cv2.copyMakeBorder(
+        resized,
+        pad_y // 2, pad_y - pad_y // 2,
+        pad_x // 2, pad_x - pad_x // 2,
+        cv2.BORDER_REPLICATE,
+    )
+
+
 def normalize_img(img: np.ndarray,
                   height: int = 64,
                   width: int = 295,
@@ -558,7 +587,13 @@ def normalize_img(img: np.ndarray,
         img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
     if not to_gray and len(img.shape) == 2:
         img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
-    img = cv2.resize(img, (width, height))
+    # Готовые чекпоинты обучены на растянутых кропах, поэтому letterbox по
+    # умолчанию выключен: включать вместе с дообучением OCR и обязательно
+    # сверять на стенде (benchmark/run_benchmark.py), иначе легко потерять точность.
+    if os.environ.get("NOMEROFF_OCR_LETTERBOX", "0").strip().lower() in ("1", "true", "yes", "on"):
+        img = letterbox_resize(img, width, height)
+    else:
+        img = cv2.resize(img, (width, height))
     img = cv2.normalize(img, None, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_32F)
 
     if to_gray:

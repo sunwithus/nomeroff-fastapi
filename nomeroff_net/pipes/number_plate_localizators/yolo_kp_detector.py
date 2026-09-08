@@ -1,3 +1,4 @@
+import os
 import torch
 import numpy as np
 from typing import List
@@ -13,23 +14,40 @@ class Detector:
     def get_classname(cls: object) -> str:
         return cls.__name__
 
-    def __init__(self, numberplate_classes=None, yolo_model_type='yolov11x') -> None:
+    def __init__(self, numberplate_classes=None, yolo_model_type=None) -> None:
         self.model = None
         self.numberplate_classes = ["numberplate"]
         if numberplate_classes is not None:
             self.numberplate_classes = numberplate_classes
         self.device = get_device_torch()
-        self.yolo_model_type = yolo_model_type
+        # NOMEROFF_YOLO=yolov11m|yolov11l|yolov11x — x самый тяжёлый в линейке (112 МБ);
+        # на кадре регистратора m/l часто дают тот же recall в разы быстрее.
+        self.yolo_model_type = yolo_model_type or os.environ.get("NOMEROFF_YOLO", "yolov11x")
+        self.half = False
 
     def load_model(self, weights: str, device: str = '') -> None:
         from ultralytics import YOLO
 
         device = device or self.device
-        # model = torch.hub.load(repo_path, 'custom', path=weights, source="local")
-        model = YOLO(weights)
-        model.to(device)
-        # if device != 'cpu':  # half precision only supported on CUDA
-        #     model.half()  # to FP16
+        # TensorRT FP16 (.engine рядом с .pt или NOMEROFF_YOLO_ENGINE) — если есть.
+        # Иначе обычный .pt + half=True. Экспорт: python tools/export_yolo_trt.py
+        engine = (os.environ.get("NOMEROFF_YOLO_ENGINE") or "").strip()
+        if not engine:
+            candidate = os.path.splitext(weights)[0] + ".engine"
+            if os.path.isfile(candidate):
+                engine = candidate
+        load_path = engine if engine and os.path.isfile(engine) else weights
+        if load_path != weights:
+            print(f"[Detector] TensorRT engine: {load_path}")
+        model = YOLO(load_path)
+        if not str(load_path).endswith(".engine"):
+            model.to(device)
+        # FP16 поддерживается только на CUDA; на sm_86 даёт примерно двукратную
+        # пропускную способность детектора. NOMEROFF_FP16=0 — выключить.
+        self.half = (
+            device != "cpu"
+            and os.environ.get("NOMEROFF_FP16", "1").strip().lower() not in ("0", "false", "no", "off")
+        )
         self.model = model
         self.device = device
 
@@ -61,8 +79,8 @@ class Detector:
             model_output.append([item[0], item[1], item[2], item[3], conf, int(cls), normalize_rect(kps)])
         return model_output
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def predict(self, imgs: List[np.ndarray], min_accuracy: float = 0.4) -> np.ndarray or List:
         model_outputs = self.model(imgs, conf=min_accuracy, verbose=False, save=False, save_txt=False, show=False,
-                                   iou=0.7, agnostic_nms=True)
+                                   iou=0.7, agnostic_nms=True, half=self.half)
         return self.convert_model_outputs_to_array(model_outputs)

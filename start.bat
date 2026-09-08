@@ -37,6 +37,11 @@ set "PYTHONIOENCODING=utf-8"
 rem Офлайн-ПК без git.exe
 set "GIT_PYTHON_REFRESH=quiet"
 rem Старые GPU (GT 710 и т.п.) auto уйдёт на CPU; явно: set NOMEROFF_DEVICE=cpu
+if not defined NOMEROFF_DEVICE set "NOMEROFF_DEVICE=auto"
+rem Дочитывать квадратные/двухстрочные номера (eu_2lines); 0 — выключить
+if not defined NOMEROFF_TWO_LINE set "NOMEROFF_TWO_LINE=1"
+rem Детектор: yolov11x (по умолчанию) или yolov11m/l быстрее; TensorRT: python tools/export_yolo_trt.py
+if not defined NOMEROFF_YOLO set "NOMEROFF_YOLO=yolov11x"
 
 echo [OK] %PY%
 "%PY%" -c "import sys; print('    Python', sys.version.split()[0])"

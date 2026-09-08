@@ -9,4 +9,7 @@ image_loaders_map = {
     "cv2": OpencvImageLoader,
     "pillow": PillowImageLoader,
     "turbo": TurboImageLoader,
+    # ndarray на входе как есть — для сервиса, который уже декодировал кадр
+    "dumpy": DumpyImageLoader,
+    "ndarray": DumpyImageLoader,
 }

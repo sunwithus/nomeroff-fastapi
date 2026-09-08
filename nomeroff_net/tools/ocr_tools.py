@@ -113,6 +113,50 @@ def decode_batch(net_out_value: torch.Tensor,
     return texts
 
 
+def decode_prediction_with_confidence(
+        logits: torch.Tensor,
+        label_converter: StrLabelConverter) -> tuple:
+    """Greedy CTC-декодирование с уверенностью на каждый символ.
+
+    Уверенность считается по softmax той же CTC-головы, поэтому она отражает
+    качество чтения текста, а не score детектора. Для символа берётся максимум
+    вероятности по кадрам его CTC-группы (повторы схлопываются, blank=0 отбрасывается).
+
+    Args:
+        logits: тензор (T, 1, V) — выход OCR-сети на один кроп.
+        label_converter: конвертер алфавита модели.
+
+    Returns:
+        (text, char_probs) — распознанный текст и список вероятностей по символам.
+    """
+    probs = logits.softmax(2)
+    best_probs, tokens = probs.max(2)
+    tokens = tokens.squeeze(1).tolist()
+    best_probs = best_probs.squeeze(1).tolist()
+
+    text = ""
+    char_probs: List[float] = []
+    for token, group in itertools.groupby(zip(tokens, best_probs), key=lambda pair: pair[0]):
+        group_max = max(p for _, p in group)
+        if token == 0:  # CTC blank
+            continue
+        text += label_converter.letters[token - 1]
+        char_probs.append(float(group_max))
+    return text, char_probs
+
+
+def decode_batch_with_confidence(
+        net_out_value: torch.Tensor,
+        label_converter: StrLabelConverter) -> List[tuple]:
+    """decode_batch + уверенность по символам для каждого элемента батча."""
+    out = []
+    for i in range(net_out_value.shape[1]):
+        out.append(
+            decode_prediction_with_confidence(net_out_value[:, i:i + 1, :], label_converter)
+        )
+    return out
+
+
 def is_valid_str(s: str, letters: List) -> bool:
     for ch in s:
         if ch not in letters:

@@ -1,0 +1,52 @@
+{
+  "_comment": [
+    "Эталон для регрессионного стенда ANPR. Источник: MbWasmStandaloneNomeroff/Todo.md",
+    "и ручная сверка кадров D:\\REG_VIDEO.",
+    "plates  — номера, которые ОБЯЗАНЫ быть найдены (recall).",
+    "optional — номера, которые встречаются в кадре, но нечитаемы/спорны:",
+    "           не штрафуют ни recall, ни precision.",
+    "Всё, чего нет ни в plates, ни в optional, считается фантомом (ложным срабатыванием)."
+  ],
+  "videos": [
+    {
+      "file": "NO20260707-145101-000033F.MP4",
+      "duration_sec": 60,
+      "start_local": "2026-07-07T14:51:01",
+      "plates": [
+        "9036СС45",
+        "Н767АК125",
+        "О447ЕН125",
+        "Р789ОН125",
+        "Х034ХА125",
+        "В713ВВ125",
+        "Т314ХС125"
+      ],
+      "optional": [],
+      "known_phantoms": [
+        "М367АК107",
+        "Е170ЕЕ356",
+        "Т681ТК135",
+        "У088ЕР25",
+        "А820НН69",
+        "Н713ВВ125"
+      ],
+      "osd_samples": [
+        { "time_sec": 40, "date_text": "07-07-2026 14:51:41" },
+        { "time_sec": 40, "gps_text": "131°55.405'E,43°11.349'N" }
+      ]
+    }
+  ],
+  "targets": {
+    "precision": 0.90,
+    "recall": 0.85,
+    "phantoms": 0,
+    "sec_per_video_minute": 60.0
+  },
+  "baseline_2026_09": {
+    "precision": 0.45,
+    "recall": 0.71,
+    "phantoms": 6,
+    "sec_per_video_minute": 530.2,
+    "note": "interval=1s, БД E2E_FIX3_*, логи logs/e2e_fix_final.log и logs/probe_modes.log"
+  }
+}

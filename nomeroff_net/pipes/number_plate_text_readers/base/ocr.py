@@ -25,7 +25,8 @@ from nomeroff_net.tools.mcm import modelhub, get_device_torch
 from nomeroff_net.tools.augmentations import aug_seed
 from nomeroff_net.tools.ocr_tools import (StrLabelConverter,
                                           decode_prediction,
-                                          decode_batch)
+                                          decode_batch,
+                                          decode_batch_with_confidence)
 
 device_torch = get_device_torch()
 
@@ -262,6 +263,14 @@ class OCR(object):
         pred_texts = decode_batch(torch.Tensor(net_out_value), self.label_converter)
         pred_texts = [pred_text.upper() for pred_text in pred_texts]
         return pred_texts
+
+    def postprocess_with_confidence(self, net_out_value):
+        """postprocess + уверенность CTC-головы: (texts, char_probs_per_text)."""
+        net_out_value = [p.cpu().numpy() for p in net_out_value]
+        decoded = decode_batch_with_confidence(torch.Tensor(net_out_value), self.label_converter)
+        texts = [text.upper() for text, _ in decoded]
+        char_probs = [probs for _, probs in decoded]
+        return texts, char_probs
 
     @torch.no_grad()
     def predict(self, xs: List or torch.Tensor, return_acc: bool = False) -> Any:

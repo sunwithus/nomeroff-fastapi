@@ -237,10 +237,16 @@ class Pipeline(AccuracyTestPipeline):
         """
         return self.call(inputs, **kwargs)
 
-    def call(self, inputs, batch_size=1, num_workers=1, **kwargs):
+    # Батч по умолчанию: 1 кадр за проход упирается в latency запуска ядер,
+    # а не в GPU. NOMEROFF_BATCH_SIZE поднимает его для всех пайплайнов.
+    DEFAULT_BATCH_SIZE = max(1, int(os.environ.get("NOMEROFF_BATCH_SIZE", "8")))
+
+    def call(self, inputs, batch_size=None, num_workers=1, **kwargs):
         """
         TODO: write description
         """
+        if batch_size is None:
+            batch_size = self.DEFAULT_BATCH_SIZE
         kwargs["batch_size"] = batch_size
         kwargs["num_workers"] = num_workers
         preprocess_params, forward_params, postprocess_params = self.sanitize_parameters(**kwargs)

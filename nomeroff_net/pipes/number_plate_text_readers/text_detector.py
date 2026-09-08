@@ -42,6 +42,11 @@ class TextDetector(object):
         self.default_lines_count = int(default_lines_count)
         self.off_number_plate_classification = off_number_plate_classification
 
+        # Уверенность OCR последнего postprocess в порядке зон: [{"ocr_conf", "char_probs"}].
+        # Пайплайн отдаёт наружу только тексты, поэтому уверенность CTC-головы
+        # (в отличие от score детектора) читается отсюда сразу после вызова.
+        self.last_ocr_meta: List[Dict] = []
+
         for preset_name in self.presets:
             if preset_name in self.detectors_names:
                 detector_id = self.detectors_names.index(preset_name)
@@ -170,28 +175,43 @@ class TextDetector(object):
     def postprocess(self, predicted):
         mapping = {}
         for key in predicted.keys():
-            predicted[key]["ys"] = self.detectors[int(key)].postprocess(predicted[key]["ys"])
-            for text, zone_id, count_line, label in zip(predicted[key]["ys"],
-                                                        predicted[key]["order"],
-                                                        predicted[key]["count_line"],
-                                                        predicted[key]["label"]):
+            texts, char_probs = self.detectors[int(key)].postprocess_with_confidence(predicted[key]["ys"])
+            predicted[key]["ys"] = texts
+            predicted[key]["char_probs"] = char_probs
+            for text, probs, zone_id, count_line, label in zip(texts,
+                                                               char_probs,
+                                                               predicted[key]["order"],
+                                                               predicted[key]["count_line"],
+                                                               predicted[key]["label"]):
                 if zone_id in mapping:
                     mapping[zone_id]["text"] += self.multiline_splitter + text
+                    mapping[zone_id]["char_probs"] = list(mapping[zone_id]["char_probs"]) + list(probs)
                 else:
                     mapping[zone_id] = {
                         "order": zone_id,
                         "text": text,
+                        "char_probs": list(probs),
                         "count_line": count_line,
                         "label": label,
                     }
         res_all = []
+        meta_all = []
         for item in mapping.values():
             post = multiple_postprocessing_mapping.get(item["label"], multiple_postprocessing_mapping["default"])
             text = post.postprocess_multiline_text(item["text"], item["count_line"])
             res_all.append(text)
+            probs = item["char_probs"]
+            meta_all.append({
+                # min по символам — один неуверенный глиф и есть причина ошибки чтения
+                "ocr_conf": float(min(probs)) if probs else 0.0,
+                "ocr_conf_mean": float(sum(probs) / len(probs)) if probs else 0.0,
+                "char_probs": [round(float(p), 4) for p in probs],
+            })
         order_all = [item["order"] for item in mapping.values()]
 
-        return [x for _, x in sorted(zip(order_all, res_all), key=lambda pair: pair[0])]
+        order_sorted = sorted(range(len(order_all)), key=lambda i: order_all[i])
+        self.last_ocr_meta = [meta_all[i] for i in order_sorted]
+        return [res_all[i] for i in order_sorted]
 
     def predict(self,
                 zones: List[np.ndarray],
