@@ -1107,7 +1107,27 @@ def _apply_military_pass(detector, zones: list, readings: list[tuple[str, list[f
     return out
 
 
-def _ocr_zones(zones: list) -> list[tuple[str, list[float]]]:
+def _promote_military_on_negative(
+    readings: list[tuple[str, list[float]]],
+    inverted: list[bool],
+) -> list[tuple[str, list[float]]]:
+    """
+    Зоны с негатива: гражданское чтение, похожее на военный номер, поднимаем
+    до военного формата. Дальше военная голова перечитает такую зону и либо
+    подтвердит, либо даст свой вариант.
+    """
+    out = list(readings)
+    for i, (text, probs) in enumerate(out):
+        if i >= len(inverted) or not inverted[i]:
+            continue
+        fixed = plate_ru.try_military_from_civilian_lookalike(text)
+        if fixed:
+            logger.info("military lookalike (негатив) zone#%s: %r → %r", i, text, fixed)
+            out[i] = (fixed, probs)
+    return out
+
+
+def _ocr_zones(zones: list, inverted: list[bool] | None = None) -> list[tuple[str, list[float]]]:
     """OCR зон: однострочные — ru, квадратные — сразу 2-line, плюс военный проход."""
     if not zones:
         return []
@@ -1128,6 +1148,8 @@ def _ocr_zones(zones: list) -> list[tuple[str, list[float]]]:
             if j < len(r2):
                 readings[i] = r2[j]
 
+    if inverted:
+        readings = _promote_military_on_negative(readings, inverted)
     if _military_ocr_available(detector):
         readings = _apply_military_pass(detector, zones, readings)
     if _two_line_enabled():
@@ -1178,7 +1200,7 @@ def _recognize_frame(
             return []
 
         zones, _ = _zones_from_bboxes(images_rgb, kept_boxes)
-        readings = _ocr_zones(zones)
+        readings = _ocr_zones(zones, [variants[o].inverted for o in owners])
 
     plates: list[PlateResult] = []
     for i, (text, char_probs) in enumerate(readings):
@@ -1490,4 +1512,9 @@ async def test_video_upload(file: UploadFile):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=False, log_level="info")
+    host = (os.environ.get("NOMEROFF_HOST") or "127.0.0.1").strip() or "127.0.0.1"
+    try:
+        port = int((os.environ.get("NOMEROFF_PORT") or "8000").strip())
+    except ValueError:
+        port = 8000
+    uvicorn.run("main:app", host=host, port=port, reload=False, log_level="info")

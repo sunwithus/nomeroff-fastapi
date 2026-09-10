@@ -4,7 +4,8 @@ setlocal EnableExtensions
 cd /d "%~dp0"
 
 echo ========================================
-echo   Nomeroff OCR API  (port 8000)
+if not defined NOMEROFF_PORT set "NOMEROFF_PORT=8000"
+echo   Nomeroff OCR API  (port %NOMEROFF_PORT%)
 echo ========================================
 echo.
 
@@ -46,8 +47,8 @@ if not defined NOMEROFF_YOLO set "NOMEROFF_YOLO=yolov11x"
 echo [OK] %PY%
 "%PY%" -c "import sys; print('    Python', sys.version.split()[0])"
 echo.
-echo     http://127.0.0.1:8000
-echo     Docs: http://127.0.0.1:8000/docs
+echo     http://127.0.0.1:%NOMEROFF_PORT%
+echo     Docs: http://127.0.0.1:%NOMEROFF_PORT%/docs
 echo     NOMEROFF_DEVICE=%NOMEROFF_DEVICE%
 echo     Stop: Ctrl+C
 echo ========================================

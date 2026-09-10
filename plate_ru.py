@@ -123,6 +123,36 @@ def _fit_mask(plate: str, mask: str) -> str | None:
     return "".join(out)
 
 
+# Буквы, в которые CTC-голова превращает первую цифру военного номера на
+# негативе. Пары по форме глифа, а не по частоте в выборке.
+_LETTER_TO_DIGIT_LOOKALIKE = {
+    "О": "0", "В": "8", "Е": "6", "Т": "7",
+    "А": "4", "С": "5", "У": "9", "Р": "9",
+}
+
+# Серии военных номеров — сдвоенные буквы; без этого признака подмена
+# первой цифры ломала бы обычные гражданские номера.
+_MILITARY_SERIES = {"СС", "ВВ", "КК", "ММ", "ТТ", "НН", "ЕЕ", "АА"}
+
+
+def try_military_from_civilian_lookalike(text: str) -> str | None:
+    """
+    На негативе военный 9036СС45 читается как гражданский У036СС45: первая
+    цифра принята за похожую букву. Возвращаем подмену только если глиф
+    действительно похож и серия сдвоенная — иначе молча портим номер.
+    """
+    plate = normalize_plate(text)
+    if not is_civilian(plate) or len(plate) < 8:
+        return None
+    if plate[4:6] not in _MILITARY_SERIES:
+        return None
+    digit = _LETTER_TO_DIGIT_LOOKALIKE.get(plate[0])
+    if digit is None:
+        return None
+    candidate = digit + plate[1:]
+    return candidate if is_military(candidate) and region_is_valid(candidate) else None
+
+
 def decode_constrained(text: str, *, require_region: bool = True) -> tuple[str, str] | None:
     """
     Декодировать чтение OCR по маскам формата РФ.
