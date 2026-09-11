@@ -90,7 +90,7 @@ _DEVICE_POLICY = _apply_device_policy_before_torch()
 
 import cv2
 import numpy as np
-from fastapi import FastAPI, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
@@ -102,7 +102,8 @@ from nomeroff_net.tools.image_processing import (crop_number_plate_roi_zones_fro
 
 import plate_ru
 import vlm_arbiter
-from frame_prep import FRAME_VARIANTS, build_variants, crop_bbox
+from frame_prep import FRAME_VARIANTS, bbox_looks_two_line, build_variants, crop_bbox
+from infer_batch import yolo_chunk_size
 
 # === Логирование ===
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -118,6 +119,8 @@ if _DEVICE_POLICY == "cpu" and _fb:
 pipeline_instance = None
 _runtime_device = "cpu"  # "cuda" | "cpu"
 _runtime_device_name = ""
+# После CUDA OOM уменьшаем чанк до размера, который прошёл.
+_yolo_chunk_cap: int | None = None
 
 # Квадратные РФ-номера: высота/ширина кропа заметно больше, чем у длинных 520×112
 _SQUARE_ASPECT_MIN = 0.42
@@ -245,6 +248,13 @@ def _zone_is_square(zone) -> bool:
     if w <= 0 or h <= 0:
         return False
     return (h / float(w)) >= _SQUARE_ASPECT_MIN
+
+
+def _needs_two_line(zone, bbox=None) -> bool:
+    """Две строки: высокий кроп или высокий bbox до сплющивания warp'ом."""
+    if not _two_line_enabled():
+        return False
+    return _zone_is_square(zone) or bbox_looks_two_line(bbox)
 
 
 def _fp16_enabled() -> bool:
@@ -617,19 +627,23 @@ def _pick_better_plate(
     return a if len(a_text) >= len(b_text) else b
 
 
-def _apply_two_line_pass(zones_flat: list, readings: list[tuple[str, list[float]]]):
+def _apply_two_line_pass(
+    zones_flat: list,
+    readings: list[tuple[str, list[float]]],
+    source_bboxes: list | None = None,
+):
     """
-    Повтор OCR с lines=2 для квадратных кропов.
+    Повтор OCR с lines=2 для квадратных / двухстрочных номеров.
 
-    Раньше проход срабатывал и на любом однострочном чтении, не прошедшем формат,
-    то есть почти на всём мусоре, и каждый раз гонял 4 варианта eu_2lines +
-    RapidOCR + половины — это была основная статья расходов. Теперь гейт по
-    геометрии зоны: двухстрочная модель нужна ровно квадратным номерам.
+    Гейт: высокий кроп или высокий bbox в исходном кадре. Warp детектора часто
+    сплющивает квадрат в полосу ~0.2 (Н909НР125 → однострочный мусор Н094РТ25),
+    поэтому одного aspect кропа мало.
     """
     need_idx: list[int] = []
     need_zones: list = []
     for i, zone in enumerate(zones_flat):
-        if zone is not None and _zone_is_square(zone):
+        bbox = source_bboxes[i] if source_bboxes and i < len(source_bboxes) else None
+        if zone is not None and _needs_two_line(zone, bbox):
             need_idx.append(i)
             need_zones.append(zone)
 
@@ -648,7 +662,33 @@ def _apply_two_line_pass(zones_flat: list, readings: list[tuple[str, list[float]
                 "2-line OCR zone#%s: %r → %r (2line=%r)",
                 i, before, after_text, _normalize_plate_text(second[0]),
             )
+        bbox = source_bboxes[i] if source_bboxes and i < len(source_bboxes) else None
+        out[i] = _reject_mashed_oneline_on_twoline_bbox(out[i], second, bbox)
     return out
+
+
+def _reject_mashed_oneline_on_twoline_bbox(
+    picked: tuple[str, list[float]],
+    reading_2line: tuple[str, list[float]],
+    bbox,
+) -> tuple[str, list[float]]:
+    """
+    Сплющенный двухстрочный: однострочная голова уверенно читает 8 символов
+    (Н094РТ25 вместо Н909НР125). Если bbox квадратный, а 2-line не подтвердил
+    эту 8-символьную маску — чтение выбрасываем.
+    """
+    if not bbox_looks_two_line(bbox):
+        return picked
+    text = _normalize_plate_text(picked[0])
+    if not (_RU_CIV.match(text) and len(text) == 8):
+        return picked
+    two = _normalize_plate_text(reading_2line[0] if reading_2line else "")
+    if two and two == text:
+        return picked
+    if two and _looks_like_ru_plate(two) and len(two) >= 9:
+        return reading_2line
+    logger.info("2-line bbox: отброшен однострочный %r (2line=%r)", text, two)
+    return "", []
 
 
 def _ru_presets(with_military: bool) -> dict:
@@ -760,6 +800,12 @@ async def lifespan(app: FastAPI):
             )
         else:
             logger.info("Модель загружена на CPU | torch=%s", torch.__version__)
+        logger.info(
+            "YOLO-батч: %s картинок за forward (device=%s, NOMEROFF_YOLO_BATCH=%s)",
+            _yolo_chunk_size(),
+            _runtime_device,
+            os.environ.get("NOMEROFF_YOLO_BATCH") or "auto",
+        )
     except Exception as ex:
         logger.warning("Не удалось уточнить device после загрузки: %s", ex)
         logger.info("Модель загружена (default_label=ru)")
@@ -807,6 +853,15 @@ class ProcessFramesRequest(BaseModel):
         2, ge=1,
         description="Номер попадает в consensus, только если встречен в N разных кадрах",
     )
+
+
+class ProcessFramesMeta(BaseModel):
+    """Метаданные к multipart /api/process_frames_raw (JPEG без base64)."""
+    variants: list[str] | None = None
+    times_sec: list[float] = Field(default_factory=list)
+    min_ocr_confidence: float = 0.0
+    include_crop: bool = True
+    min_frame_hits: int = 1
 
 
 class PlateResult(BaseModel):
@@ -998,9 +1053,19 @@ async def index():
 @app.get("/health")
 async def health_check():
     cuda_available = False
+    vram: dict = {}
     try:
         import torch
         cuda_available = bool(torch.cuda.is_available())
+        if cuda_available:
+            free_b, total_b = torch.cuda.mem_get_info(0)
+            vram = {
+                "vram_used_mb": round((total_b - free_b) / (1024 * 1024), 1),
+                "vram_free_mb": round(free_b / (1024 * 1024), 1),
+                "vram_total_mb": round(total_b / (1024 * 1024), 1),
+                "vram_allocated_mb": round(torch.cuda.memory_allocated(0) / (1024 * 1024), 1),
+                "vram_reserved_mb": round(torch.cuda.memory_reserved(0) / (1024 * 1024), 1),
+            }
     except Exception:
         pass
     return {
@@ -1011,6 +1076,11 @@ async def health_check():
         "device_name": _runtime_device_name or None,
         "device_policy": os.environ.get("NOMEROFF_DEVICE", "auto"),
         "two_line": _two_line_enabled(),
+        # Сети — на device; нарезка кадров / JPEG / ROI — всегда CPU.
+        "inference": _runtime_device,
+        "preprocess": "cpu",
+        "yolo_batch": _yolo_chunk_size(),
+        **vram,
     }
 
 
@@ -1047,20 +1117,86 @@ async def ocr_overlay(request: OcrOverlayRequest):
         raise HTTPException(status_code=500, detail=str(ex))
 
 
-def _decode_frame(image_base64: str):
-    """base64 -> BGR ndarray. Без промежуточного файла на диске."""
-    img_data = base64.b64decode(image_base64)
-    nparr = np.frombuffer(img_data, np.uint8)
-    frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+def _decode_jpeg_bytes(data: bytes):
+    """JPEG/PNG bytes -> BGR. Общий путь для JSON (после base64) и multipart."""
+    if not data:
+        raise ValueError("Пустой кадр")
+    frame = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
     if frame is None:
         raise ValueError("Не удалось декодировать изображение")
     return frame
 
 
-def _localize(images_rgb: list) -> list[list]:
-    """Детекция номеров одним батчем. Возвращает per-image список [x1,y1,x2,y2,conf,cls,kps]."""
+def _decode_frame(image_base64: str):
+    """base64 -> BGR ndarray. Без промежуточного файла на диске."""
+    return _decode_jpeg_bytes(base64.b64decode(image_base64))
+
+
+def _yolo_chunk_size() -> int:
+    free_mb = None
+    if _runtime_device == "cuda":
+        try:
+            import torch
+            free_b, _total = torch.cuda.mem_get_info(0)
+            free_mb = free_b / (1024 * 1024)
+        except Exception:
+            free_mb = None
+    n = yolo_chunk_size(
+        _runtime_device,
+        free_vram_mb=free_mb,
+        env_batch=os.environ.get("NOMEROFF_YOLO_BATCH"),
+    )
+    if _yolo_chunk_cap is not None:
+        n = min(n, _yolo_chunk_cap)
+    return max(1, n)
+
+
+def _is_cuda_oom(ex: BaseException) -> bool:
+    msg = str(ex).lower()
+    return "out of memory" in msg or "cuda oom" in msg
+
+
+def _clear_cuda_cache():
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
+def _localize_once(images_rgb: list) -> list[list]:
+    """Один forward детектора. При OOM режем батч пополам — слабая карта не падает."""
+    if not images_rgb:
+        return []
     detector = pipeline_instance.number_plate_localization.detector
-    return detector.predict(images_rgb)
+    try:
+        return detector.predict(images_rgb)
+    except Exception as ex:
+        if not (_runtime_device == "cuda" and _is_cuda_oom(ex) and len(images_rgb) > 1):
+            raise
+        global _yolo_chunk_cap
+        _clear_cuda_cache()
+        mid = max(1, len(images_rgb) // 2)
+        _yolo_chunk_cap = mid if _yolo_chunk_cap is None else min(_yolo_chunk_cap, mid)
+        logger.warning(
+            "CUDA OOM на YOLO-батче %s — режем до %s+%s",
+            len(images_rgb), mid, len(images_rgb) - mid,
+        )
+        return _localize_once(images_rgb[:mid]) + _localize_once(images_rgb[mid:])
+
+
+def _localize(images_rgb: list) -> list[list]:
+    """Детекция номеров. На CPU чанк = один кадр; на CUDA — по свободной VRAM."""
+    if not images_rgb:
+        return []
+    chunk = _yolo_chunk_size()
+    if len(images_rgb) <= chunk:
+        return _localize_once(images_rgb)
+    out: list[list] = []
+    for i in range(0, len(images_rgb), chunk):
+        out.extend(_localize_once(images_rgb[i:i + chunk]))
+    return out
 
 
 def _zones_from_bboxes(images_rgb: list, images_bboxs: list):
@@ -1127,14 +1263,24 @@ def _promote_military_on_negative(
     return out
 
 
-def _ocr_zones(zones: list, inverted: list[bool] | None = None) -> list[tuple[str, list[float]]]:
-    """OCR зон: однострочные — ru, квадратные — сразу 2-line, плюс военный проход."""
+def _ocr_zones(
+    zones: list,
+    inverted: list[bool] | None = None,
+    source_bboxes: list | None = None,
+) -> list[tuple[str, list[float]]]:
+    """OCR зон: однострочные — ru, квадратные/двухстрочные — сразу 2-line."""
     if not zones:
         return []
     detector = pipeline_instance.number_plate_text_reading.detector
     readings: list[tuple[str, list[float]]] = [("", [])] * len(zones)
 
-    idx_1line = [i for i, z in enumerate(zones) if not (_two_line_enabled() and _zone_is_square(z))]
+    def _bbox_at(i: int):
+        return source_bboxes[i] if source_bboxes and i < len(source_bboxes) else None
+
+    idx_1line = [
+        i for i, z in enumerate(zones)
+        if not _needs_two_line(z, _bbox_at(i))
+    ]
     idx_2line = [i for i, z in enumerate(zones) if i not in idx_1line]
 
     if idx_1line:
@@ -1155,53 +1301,43 @@ def _ocr_zones(zones: list, inverted: list[bool] | None = None) -> list[tuple[st
     if _two_line_enabled():
         # eu_2lines + RapidOCR поверх геометрического 2-line: квадратный Т314ХС125
         # часто читается только этой веткой, а не однострочной гражданской головой.
-        readings = _apply_two_line_pass(zones, readings)
+        readings = _apply_two_line_pass(zones, readings, source_bboxes)
     return readings
 
 
-def _recognize_frame(
-    frame_bgr,
-    variant_names: list[str] | tuple[str, ...],
+def _collect_kept(variants, images_rgb, detections):
+    """Гейт bbox по каждому варианту. owners — индекс в variants/images_rgb."""
+    kept_boxes: list[list] = [[] for _ in variants]
+    owners: list[int] = []
+    source_bboxes: list[list[int]] = []
+    det_scores: list[float] = []
+    for vi, (variant, boxes) in enumerate(zip(variants, detections)):
+        shape = images_rgb[vi].shape
+        for box in boxes or []:
+            reason = bbox_gate(box, shape)
+            if reason is not None:
+                logger.debug("bbox gate [%s]: %s", variant.name, reason)
+                continue
+            kept_boxes[vi].append(box)
+            owners.append(vi)
+            source_bboxes.append(variant.bbox_to_source(box))
+            det_scores.append(float(box[4]) if len(box) > 4 else 0.0)
+    return kept_boxes, owners, source_bboxes, det_scores
+
+
+def _emit_plates(
+    variants,
+    owners: list[int],
+    source_bboxes: list[list[int]],
+    det_scores: list[float],
+    zones,
+    readings: list[tuple[str, list[float]]],
     *,
-    min_ocr_confidence: float = 0.0,
-    include_crop: bool = True,
+    min_ocr_confidence: float,
+    include_crop: bool,
+    frame_bgr=None,
+    frame_per_owner: list | None = None,
 ) -> list[PlateResult]:
-    """
-    Полный проход по одному кадру: варианты предобработки -> детекция -> гейт bbox
-    -> OCR с уверенностью CTC -> декодирование по маске формата РФ.
-
-    Все варианты кадра идут в детектор одним батчем, поэтому 5 вариантов стоят
-    почти столько же, сколько раньше стоил один HTTP-проход.
-    """
-    variants = build_variants(frame_bgr, variant_names)
-    # Nomeroff работает в RGB
-    images_rgb = [cv2.cvtColor(v.image, cv2.COLOR_BGR2RGB) for v in variants]
-
-    with _inference_ctx():
-        detections = _localize(images_rgb)
-
-        kept_boxes: list[list] = [[] for _ in variants]
-        owners: list[int] = []
-        source_bboxes: list[list[int]] = []
-        det_scores: list[float] = []
-        for vi, (variant, boxes) in enumerate(zip(variants, detections)):
-            shape = images_rgb[vi].shape
-            for box in boxes or []:
-                reason = bbox_gate(box, shape)
-                if reason is not None:
-                    logger.debug("bbox gate [%s]: %s", variant.name, reason)
-                    continue
-                kept_boxes[vi].append(box)
-                owners.append(vi)
-                source_bboxes.append(variant.bbox_to_source(box))
-                det_scores.append(float(box[4]) if len(box) > 4 else 0.0)
-
-        if not owners:
-            return []
-
-        zones, _ = _zones_from_bboxes(images_rgb, kept_boxes)
-        readings = _ocr_zones(zones, [variants[o].inverted for o in owners])
-
     plates: list[PlateResult] = []
     for i, (text, char_probs) in enumerate(readings):
         decoded = plate_ru.decode_constrained(text)
@@ -1217,14 +1353,16 @@ def _recognize_frame(
         variant = variants[owners[i]] if i < len(owners) else variants[0]
         bbox = source_bboxes[i] if i < len(source_bboxes) else [0, 0, 0, 0]
         area = max(0, (bbox[2] - bbox[0])) * max(0, (bbox[3] - bbox[1]))
+        src_frame = frame_per_owner[i] if frame_per_owner is not None else frame_bgr
 
         plate_b64 = None
         if include_crop:
             # Кроп всегда из ОРИГИНАЛЬНОГО кадра по обратно отображённому bbox:
             # иначе в БД уезжает негатив или растянутый ROI вместо номера.
-            crop = crop_bbox(frame_bgr, bbox)
-            if crop is not None and crop.size:
-                plate_b64 = _bgr_to_jpeg_b64(crop)
+            if src_frame is not None:
+                crop = crop_bbox(src_frame, bbox)
+                if crop is not None and crop.size:
+                    plate_b64 = _bgr_to_jpeg_b64(crop)
             if plate_b64 is None and i < len(zones):
                 plate_b64 = _zone_to_jpeg_b64(zones[i])
 
@@ -1244,6 +1382,183 @@ def _recognize_frame(
             )
         )
     return plates
+
+
+def _recognize_one_frame(
+    frame_bgr,
+    variant_names: list[str] | tuple[str, ...],
+    *,
+    min_ocr_confidence: float = 0.0,
+    include_crop: bool = True,
+) -> list[PlateResult]:
+    """Один кадр: 5 вариантов в один YOLO-forward. Путь CPU и камеры."""
+    variants = build_variants(frame_bgr, variant_names)
+    images_rgb = [cv2.cvtColor(v.image, cv2.COLOR_BGR2RGB) for v in variants]
+
+    with _inference_ctx():
+        detections = _localize(images_rgb)
+        kept_boxes, owners, source_bboxes, det_scores = _collect_kept(
+            variants, images_rgb, detections
+        )
+        if not owners:
+            return []
+        zones, _ = _zones_from_bboxes(images_rgb, kept_boxes)
+        readings = _ocr_zones(
+            zones,
+            [variants[o].inverted for o in owners],
+            source_bboxes,
+        )
+
+    return _emit_plates(
+        variants, owners, source_bboxes, det_scores, zones, readings,
+        min_ocr_confidence=min_ocr_confidence,
+        include_crop=include_crop,
+        frame_bgr=frame_bgr,
+    )
+
+
+def _recognize_flat_batch(
+    frames_bgr: list,
+    variant_names: list[str] | tuple[str, ...],
+    *,
+    min_ocr_confidence: float,
+    include_crop: bool,
+) -> list[list[PlateResult]]:
+    """Все кадры HTTP-батча — один (чанканутый) YOLO + один OCR. Только CUDA."""
+    all_variants = []
+    all_rgb = []
+    variant_frame: list = []
+    frame_of_variant: list[int] = []
+
+    for fi, frame in enumerate(frames_bgr):
+        variants = build_variants(frame, variant_names)
+        for v in variants:
+            all_variants.append(v)
+            all_rgb.append(cv2.cvtColor(v.image, cv2.COLOR_BGR2RGB))
+            variant_frame.append(frame)
+            frame_of_variant.append(fi)
+
+    empty: list[list[PlateResult]] = [[] for _ in frames_bgr]
+    if not all_rgb:
+        return empty
+
+    with _inference_ctx():
+        detections = _localize(all_rgb)
+        kept_boxes, owners, source_bboxes, det_scores = _collect_kept(
+            all_variants, all_rgb, detections
+        )
+        if not owners:
+            return empty
+        zones, _ = _zones_from_bboxes(all_rgb, kept_boxes)
+        readings = _ocr_zones(
+            zones,
+            [all_variants[o].inverted for o in owners],
+            source_bboxes,
+        )
+
+    return _split_plates_by_frame(
+        frames_bgr, all_variants, owners, source_bboxes, det_scores,
+        zones, readings, frame_of_variant, variant_frame,
+        min_ocr_confidence=min_ocr_confidence,
+        include_crop=include_crop,
+    )
+
+
+def _split_plates_by_frame(
+    frames_bgr,
+    all_variants,
+    owners,
+    source_bboxes,
+    det_scores,
+    zones,
+    readings,
+    frame_of_variant: list[int],
+    variant_frame: list,
+    *,
+    min_ocr_confidence: float,
+    include_crop: bool,
+) -> list[list[PlateResult]]:
+    """Разложить плоские чтения по исходным кадрам."""
+    by_frame: list[list[PlateResult]] = [[] for _ in frames_bgr]
+    for i, owner in enumerate(owners):
+        one = _emit_plates(
+            all_variants,
+            [owner],
+            [source_bboxes[i]],
+            [det_scores[i]],
+            [zones[i]] if i < len(zones) else [None],
+            [readings[i]] if i < len(readings) else [("", [])],
+            min_ocr_confidence=min_ocr_confidence,
+            include_crop=include_crop,
+            frame_bgr=variant_frame[owner],
+        )
+        if one:
+            by_frame[frame_of_variant[owner]].extend(one)
+    return by_frame
+
+
+def _recognize_many_frames(
+    frames_bgr: list,
+    variant_names: list[str] | tuple[str, ...],
+    *,
+    min_ocr_confidence: float = 0.0,
+    include_crop: bool = True,
+) -> list[list[PlateResult]]:
+    """
+    CUDA: все кадры запроса в один детектор (чанки по VRAM).
+    CPU / один кадр: как раньше, по кадру — i3 не раздувает RAM.
+    CUDA OOM: откат на по-кадровый путь, качество то же.
+    """
+    if not frames_bgr:
+        return []
+    if _runtime_device != "cuda" or len(frames_bgr) == 1:
+        return [
+            _recognize_one_frame(
+                frame, variant_names,
+                min_ocr_confidence=min_ocr_confidence,
+                include_crop=include_crop,
+            )
+            for frame in frames_bgr
+        ]
+    try:
+        return _recognize_flat_batch(
+            frames_bgr, variant_names,
+            min_ocr_confidence=min_ocr_confidence,
+            include_crop=include_crop,
+        )
+    except Exception as ex:
+        if not _is_cuda_oom(ex):
+            raise
+        logger.warning(
+            "CUDA OOM на батче из %s кадров — считаем по кадру", len(frames_bgr)
+        )
+        _clear_cuda_cache()
+        return [
+            _recognize_one_frame(
+                frame, variant_names,
+                min_ocr_confidence=min_ocr_confidence,
+                include_crop=include_crop,
+            )
+            for frame in frames_bgr
+        ]
+
+
+def _recognize_frame(
+    frame_bgr,
+    variant_names: list[str] | tuple[str, ...],
+    *,
+    min_ocr_confidence: float = 0.0,
+    include_crop: bool = True,
+) -> list[PlateResult]:
+    """
+    Полный проход по одному кадру: варианты предобработки -> детекция -> гейт bbox
+    -> OCR с уверенностью CTC -> декодирование по маске формата РФ.
+    """
+    return _recognize_one_frame(
+        frame_bgr, variant_names,
+        min_ocr_confidence=min_ocr_confidence,
+        include_crop=include_crop,
+    )
 
 
 @app.post("/api/process_frame", response_model=ProcessFrameResponse)
@@ -1298,49 +1613,33 @@ async def arbitrate_plate(request: ArbitratePlateRequest):
     return ArbitratePlateResponse(enabled=True, plate=plate, decided_by=source)
 
 
-@app.post("/api/process_frames", response_model=ProcessFramesResponse)
-async def process_frames(request: ProcessFramesRequest):
-    """
-    Батч кадров одного проезда за один вызов + межкадровый консенсус.
-
-    Заменяет 6 последовательных HTTP-проходов на кадр: варианты предобработки
-    делаются здесь, детектор получает их одним батчем, а голосование по символам
-    между кадрами убирает фантомы, которые видно ровно один раз.
-    """
+def _process_decoded_frames(
+    frames_bgr: list,
+    times_sec: list[float],
+    variant_names: list[str] | tuple[str, ...],
+    min_ocr_confidence: float,
+    include_crop: bool,
+    min_frame_hits: int,
+) -> ProcessFramesResponse:
     start = time.time()
-    if not request.frames:
-        raise HTTPException(status_code=400, detail="frames пуст")
-
-    variant_names = request.variants or ("full", "crop", "roi")
+    per_frame = _recognize_many_frames(
+        frames_bgr,
+        variant_names,
+        min_ocr_confidence=min_ocr_confidence,
+        include_crop=include_crop,
+    )
     frames_out: list[FrameResult] = []
-    # plate -> список (кадр, чтение) для голосования
     votes: dict[str, list[tuple[float, PlateResult]]] = {}
-
-    try:
-        for item in request.frames:
-            frame = _decode_frame(item.image_base64)
-            plates = _recognize_frame(
-                frame,
-                variant_names,
-                min_ocr_confidence=request.min_ocr_confidence,
-                include_crop=request.include_crop,
-            )
-            frames_out.append(FrameResult(time_sec=item.time_sec, plates=plates))
-            # один голос от кадра на номер: 5 вариантов одного кадра — это не 5 кадров
-            best_per_plate: dict[str, PlateResult] = {}
-            for p in plates:
-                prev = best_per_plate.get(p.plate)
-                if prev is None or p.ocr_confidence > prev.ocr_confidence:
-                    best_per_plate[p.plate] = p
-            for plate, p in best_per_plate.items():
-                votes.setdefault(plate, []).append((item.time_sec, p))
-    except ValueError as ex:
-        raise HTTPException(status_code=400, detail=str(ex))
-    except Exception as ex:
-        logger.error("Ошибка батча: %s", ex, exc_info=True)
-        raise HTTPException(status_code=500, detail=str(ex))
-
-    consensus = _build_consensus(votes, request.min_frame_hits)
+    for time_sec, plates in zip(times_sec, per_frame):
+        frames_out.append(FrameResult(time_sec=time_sec, plates=plates))
+        best_per_plate: dict[str, PlateResult] = {}
+        for p in plates:
+            prev = best_per_plate.get(p.plate)
+            if prev is None or p.ocr_confidence > prev.ocr_confidence:
+                best_per_plate[p.plate] = p
+        for plate, p in best_per_plate.items():
+            votes.setdefault(plate, []).append((time_sec, p))
+    consensus = _build_consensus(votes, min_frame_hits)
     elapsed_ms = (time.time() - start) * 1000
     return ProcessFramesResponse(
         success=True,
@@ -1349,6 +1648,71 @@ async def process_frames(request: ProcessFramesRequest):
         processing_time_ms=round(elapsed_ms, 2),
         message=f"Кадров {len(frames_out)}, консенсус по {len(consensus)} номерам",
     )
+
+
+@app.post("/api/process_frames", response_model=ProcessFramesResponse)
+async def process_frames(request: ProcessFramesRequest):
+    """
+    Батч кадров одного проезда за один вызов + межкадровый консенсус.
+
+    На CUDA детектор берёт все кадры запроса сразу (чанки по VRAM).
+    На CPU — по кадру, как раньше, чтобы i3 не упирался в RAM.
+    """
+    if not request.frames:
+        raise HTTPException(status_code=400, detail="frames пуст")
+    try:
+        frames_bgr = [_decode_frame(item.image_base64) for item in request.frames]
+        times = [item.time_sec for item in request.frames]
+        return _process_decoded_frames(
+            frames_bgr,
+            times,
+            request.variants or ("full", "crop", "roi"),
+            request.min_ocr_confidence,
+            request.include_crop,
+            request.min_frame_hits,
+        )
+    except ValueError as ex:
+        raise HTTPException(status_code=400, detail=str(ex))
+    except Exception as ex:
+        logger.error("Ошибка батча: %s", ex, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(ex))
+
+
+@app.post("/api/process_frames_raw", response_model=ProcessFramesResponse)
+async def process_frames_raw(
+    meta: str = Form(...),
+    files: list[UploadFile] = File(...),
+):
+    """
+    Тот же разбор, что /api/process_frames, но JPEG файлами — без base64.
+    Старый клиент без этого маршрута остаётся на JSON.
+    """
+    if not files:
+        raise HTTPException(status_code=400, detail="files пуст")
+    try:
+        spec = ProcessFramesMeta.model_validate_json(meta)
+    except Exception as ex:
+        raise HTTPException(status_code=400, detail=f"meta: {ex}")
+    try:
+        frames_bgr = []
+        times: list[float] = []
+        for i, upload in enumerate(files):
+            data = await upload.read()
+            frames_bgr.append(_decode_jpeg_bytes(data))
+            times.append(spec.times_sec[i] if i < len(spec.times_sec) else 0.0)
+        return _process_decoded_frames(
+            frames_bgr,
+            times,
+            spec.variants or ("full", "crop", "roi"),
+            spec.min_ocr_confidence,
+            spec.include_crop,
+            spec.min_frame_hits,
+        )
+    except ValueError as ex:
+        raise HTTPException(status_code=400, detail=str(ex))
+    except Exception as ex:
+        logger.error("Ошибка raw-батча: %s", ex, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(ex))
 
 
 def _crop_for_arbiter(plate: "PlateResult"):

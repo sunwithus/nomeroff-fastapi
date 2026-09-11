@@ -133,6 +133,27 @@ def build_variants(
     return out or [FrameVariant("full", frame)]
 
 
+def bbox_looks_two_line(bbox, min_aspect: float = 0.32, max_aspect: float = 1.35) -> bool:
+    """
+    Квадратный / двухстрочный номер по рамке в исходном кадре.
+
+    Однострочный 520×112 даёт высоту/ширину ~0.22. Двухстрочный ~290×170 — около 0.6.
+    После warp детектора зона часто сплющивается в полосу ~0.2, и гейт по кропу
+    уже не видит две строки — поэтому смотрим исходный bbox.
+    """
+    if bbox is None or len(bbox) < 4:
+        return False
+    try:
+        w = abs(float(bbox[2]) - float(bbox[0]))
+        h = abs(float(bbox[3]) - float(bbox[1]))
+    except (TypeError, ValueError, IndexError):
+        return False
+    if w < 8 or h < 8:
+        return False
+    aspect = h / w
+    return min_aspect <= aspect <= max_aspect
+
+
 def crop_bbox(frame: np.ndarray, bbox, pad: int = 8) -> np.ndarray | None:
     """Кроп по bbox исходного кадра с небольшим padding."""
     if frame is None or bbox is None or len(bbox) < 4:
